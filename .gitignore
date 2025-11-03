@@ -3,6 +3,9 @@
 # dependencies
 node_modules/
 
+#uploaded files
+uploads/
+
 # debug
 npm-debug.*
 yarn-debug.*
