@@ -37,8 +37,19 @@ const searchFiles = (query) => {
     .value();
 };
 
-module.exports = {
+const getFileById = (id) => {
+  return db.get("files").find({ id: id }).value();
+};
+
+const deleteFile = (id) => {
+  db.get("files").remove({ id: id }).write();
+  return true; // Indicate success
+};
+
+export default {
   addFile,
   getFiles,
   searchFiles,
+  getFileById,
+  deleteFile
 };
