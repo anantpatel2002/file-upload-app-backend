@@ -30,6 +30,7 @@ const searchFiles = (query) => {
       const inOriginalName = file.originalname
         .toLowerCase()
         .includes(lowerCaseQuery);
+      // Only search text if it exists (i.e., for PDFs)
       const inText = file.extractedText?.toLowerCase().includes(lowerCaseQuery);
 
       return inTitle || inOriginalName || inText;
@@ -43,13 +44,13 @@ const getFileById = (id) => {
 
 const deleteFile = (id) => {
   db.get("files").remove({ id: id }).write();
-  return true; // Indicate success
+  return true;
 };
 
-export default {
+module.exports = {
   addFile,
   getFiles,
   searchFiles,
   getFileById,
-  deleteFile
+  deleteFile,
 };

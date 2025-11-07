@@ -10,54 +10,45 @@ const db = require("./db");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- Ensure uploads directory exists ---
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 if (!fsSync.existsSync(UPLOADS_DIR)) {
   fsSync.mkdirSync(UPLOADS_DIR, { recursive: true });
   console.log("Created uploads directory");
 }
 
-// --- Middleware ---
 app.use(cors());
 app.use(express.json());
 
-// Request timeout middleware (prevents hanging requests)
 app.use((req, res, next) => {
-  // Set timeout for request and response (30 seconds)
   req.setTimeout(30000, () => {
     console.error("Request timeout:", req.method, req.path);
-    res
-      .status(408)
-      .json({
-        message: "Request timeout. The operation took too long to complete.",
-      });
+    res.status(408).json({
+      message: "Request timeout. The operation took too long to complete.",
+    });
   });
-
   res.setTimeout(30000, () => {
     console.error("Response timeout:", req.method, req.path);
   });
-
   next();
 });
 
 // Serve static files from the 'uploads' directory
 app.use("/uploads", express.static(UPLOADS_DIR));
 
-// --- File Storage with Multer ---
+// --- File Storage with Multer---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOADS_DIR);
   },
   filename: (req, file, cb) => {
-    // Sanitize filename and store as timestamp_originalname.pdf
     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
     const uniqueFilename = `${Date.now()}_${sanitizedName}`;
     cb(null, uniqueFilename);
   },
 });
 
-// File filter to accept only PDFs
-const fileFilter = (req, file, cb) => {
+// --- PDF Multer Config ---
+const pdfFileFilter = (req, file, cb) => {
   if (file.mimetype === "application/pdf") {
     cb(null, true);
   } else {
@@ -65,11 +56,25 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Multer configuration
 const upload = multer({
   storage: storage,
-  fileFilter: fileFilter,
+  fileFilter: pdfFileFilter,
   limits: { fileSize: 105 * 1024 * 1024 }, // 100 MB limit
+});
+
+// --- VIDEO Multer Config---
+const videoFileFilter = (req, file, cb) => {
+  if (file.mimetype === "video/mp4") {
+    cb(null, true);
+  } else {
+    cb(new Error("Only .mp4 video files are allowed!"), false);
+  }
+};
+
+const uploadVideo = multer({
+  storage: storage,
+  fileFilter: videoFileFilter,
+  limits: { fileSize: 525 * 1024 * 1024 }, // 500 MB limit
 });
 
 // --- Helper function to clean up file ---
@@ -91,36 +96,26 @@ async function cleanupFile(filePath) {
 app.post("/upload", upload.single("file"), async (req, res) => {
   let uploadedFilePath = null;
   const startTime = Date.now();
-  console.log("accessing /upload route");
+  console.log("accessing /upload route (PDF)");
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded." });
     }
 
     uploadedFilePath = req.file.path;
-
-    // Get title from request body
     const { title } = req.body;
 
-    // Validate title if provided
     if (title && title.trim().length === 0) {
       await cleanupFile(uploadedFilePath);
       return res.status(400).json({ message: "Title cannot be empty." });
     }
 
-    // Read the uploaded PDF file to extract text (using async)
     const dataBuffer = await fs.readFile(uploadedFilePath);
 
-    // Create PDFParse instance with the buffer
     const parser = new PDFParse({ data: dataBuffer });
-
-    // Extract text from PDF
     const pdfData = await parser.getText();
-
-    // Clean up parser resources
     await parser.destroy();
 
-    // Validate extracted text
     if (!pdfData.text || pdfData.text.trim().length === 0) {
       await cleanupFile(uploadedFilePath);
       return res
@@ -138,9 +133,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       size: req.file.size,
       uploadDate: new Date().toISOString(),
       extractedText: pdfData.text.trim(),
+      fileType: "pdf",
     };
 
-    // Save metadata to the database
     const newFile = db.addFile(fileMetadata);
 
     if (!newFile) {
@@ -158,6 +153,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         originalname: newFile.originalname,
         uploadDate: newFile.uploadDate,
         size: newFile.size,
+        fileType: newFile.fileType,
       },
       processingTime: `${Date.now() - startTime}ms`,
     });
@@ -165,25 +161,102 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     console.error("Error uploading file:", error);
     console.error(`Upload failed after ${Date.now() - startTime}ms`);
 
-    // Cleanup file on error
     if (uploadedFilePath) {
       await cleanupFile(uploadedFilePath);
     }
 
-    // Handle specific errors
     if (error.message.includes("Only .pdf files are allowed")) {
       return res.status(400).json({ message: error.message });
     }
     if (error.message.includes("File too large")) {
-      return res.status(400).json({ message: "File size exceeds 100MB limit." });
+      return res
+        .status(400)
+        .json({ message: "File size exceeds 100MB limit." });
     }
 
-    res
-      .status(500)
-      .json({
-        message: "Server error during file upload.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Server error during file upload.",
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /upload/video
+ * Uploads an MP4 video file. (NEW)
+ */
+app.post("/upload/video", uploadVideo.single("file"), async (req, res) => {
+  let uploadedFilePath = null;
+  const startTime = Date.now();
+  console.log("accessing /upload/video route");
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded." });
+    }
+
+    uploadedFilePath = req.file.path;
+    const { title } = req.body;
+
+    if (title && title.trim().length === 0) {
+      await cleanupFile(uploadedFilePath);
+      return res.status(400).json({ message: "Title cannot be empty." });
+    }
+
+    // Create metadata object for video
+    const fileMetadata = {
+      title: title?.trim() || req.file.originalname,
+      originalname: req.file.originalname,
+      filename: req.file.filename,
+      path: req.file.path,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      uploadDate: new Date().toISOString(),
+      fileType: "video",
+      extractedText: null,
+    };
+
+    const newFile = db.addFile(fileMetadata);
+
+    if (!newFile) {
+      await cleanupFile(uploadedFilePath);
+      return res
+        .status(500)
+        .json({ message: "Failed to save file metadata to database." });
+    }
+
+    res.status(201).json({
+      message: "Video file uploaded successfully!",
+      file: {
+        id: newFile.id,
+        title: newFile.title,
+        originalname: newFile.originalname,
+        uploadDate: newFile.uploadDate,
+        size: newFile.size,
+        fileType: newFile.fileType,
+      },
+      processingTime: `${Date.now() - startTime}ms`,
+    });
+  } catch (error) {
+    console.error("Error uploading video:", error);
+    console.error(`Upload failed after ${Date.now() - startTime}ms`);
+
+    if (uploadedFilePath) {
+      await cleanupFile(uploadedFilePath);
+    }
+
+    if (error.message.includes("Only .mp4 video files are allowed")) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error.message.includes("File too large")) {
+      return res
+        .status(400)
+        .json({ message: "File size exceeds 500MB limit." });
+    }
+
+    res.status(500).json({
+      message: "Server error during video file upload.",
+      error: error.message,
+    });
   }
 });
 
@@ -201,13 +274,13 @@ app.get("/files", (req, res) => {
         .json({ message: "Error retrieving files from database." });
     }
 
-    // Return metadata, not the full text (for brevity)
     const filesMetadata = files.map((f) => ({
       id: f.id,
       title: f.title,
       originalname: f.originalname,
       uploadDate: f.uploadDate,
       size: f.size,
+      fileType: f.fileType || "unknown",
     }));
 
     res.status(200).json(filesMetadata);
@@ -257,14 +330,13 @@ app.get("/search", (req, res) => {
       return res.status(500).json({ message: "Error searching files." });
     }
 
-    // Format results (remove extractedText for brevity)
     const formattedResults = results.map((f) => ({
       id: f.id,
       title: f.title,
       originalname: f.originalname,
       uploadDate: f.uploadDate,
       size: f.size,
-      // Optionally include a snippet of matching text
+      fileType: f.fileType || "unknown",
       snippet: f.extractedText ? f.extractedText.substring(0, 200) + "..." : "",
     }));
 
@@ -307,13 +379,12 @@ app.delete("/files/:id", async (req, res) => {
   }
 });
 
-// --- Error handling middleware ---
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
 
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({ message: "File size exceeds 10MB limit." });
+      return res.status(400).json({ message: "File size limit exceeded." });
     }
     return res.status(400).json({ message: `Upload error: ${err.message}` });
   }
