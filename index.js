@@ -6,6 +6,7 @@ const fs = require("fs").promises;
 const fsSync = require("fs");
 const { PDFParse } = require("pdf-parse");
 const db = require("./db");
+const search = require("./lib/search");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -136,7 +137,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       fileType: "pdf",
     };
 
-    const newFile = db.addFile(fileMetadata);
+    const newFile = await db.addFile(fileMetadata);
 
     if (!newFile) {
       await cleanupFile(uploadedFilePath);
@@ -144,6 +145,8 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         .status(500)
         .json({ message: "Failed to save file metadata to database." });
     }
+
+    search.addToFileIndex(newFile);
 
     res.status(201).json({
       message: "File uploaded and processed successfully!",
@@ -215,7 +218,7 @@ app.post("/upload/video", uploadVideo.single("file"), async (req, res) => {
       extractedText: null,
     };
 
-    const newFile = db.addFile(fileMetadata);
+    const newFile = await db.addFile(fileMetadata);
 
     if (!newFile) {
       await cleanupFile(uploadedFilePath);
@@ -223,6 +226,8 @@ app.post("/upload/video", uploadVideo.single("file"), async (req, res) => {
         .status(500)
         .json({ message: "Failed to save file metadata to database." });
     }
+
+    search.addToFileIndex(newFile);
 
     res.status(201).json({
       message: "Video file uploaded successfully!",
@@ -264,9 +269,9 @@ app.post("/upload/video", uploadVideo.single("file"), async (req, res) => {
  * GET /files
  * Returns a list of all uploaded files.
  */
-app.get("/files", (req, res) => {
+app.get("/files", async (req, res) => {
   try {
-    const files = db.getFiles();
+    const files = await db.getFiles();
 
     if (!files) {
       return res
@@ -274,16 +279,8 @@ app.get("/files", (req, res) => {
         .json({ message: "Error retrieving files from database." });
     }
 
-    const filesMetadata = files.map((f) => ({
-      id: f.id,
-      title: f.title,
-      originalname: f.originalname,
-      uploadDate: f.uploadDate,
-      size: f.size,
-      fileType: f.fileType || "unknown",
-    }));
 
-    res.status(200).json(filesMetadata);
+    res.status(200).json(files);
   } catch (error) {
     console.error("Error fetching files:", error);
     res.status(500).json({ message: "Server error.", error: error.message });
@@ -294,10 +291,10 @@ app.get("/files", (req, res) => {
  * GET /files/:id
  * Returns a specific file's details including extracted text.
  */
-app.get("/files/:id", (req, res) => {
+app.get("/files/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const file = db.getFileById(id);
+    const file = await db.getFileById(id);
 
     if (!file) {
       return res.status(404).json({ message: "File not found." });
@@ -314,7 +311,7 @@ app.get("/files/:id", (req, res) => {
  * GET /search?query=...
  * Searches files by title, name, or extracted text.
  */
-app.get("/search", (req, res) => {
+app.get("/search", async (req, res) => {
   try {
     const { query } = req.query;
 
@@ -324,23 +321,26 @@ app.get("/search", (req, res) => {
         .json({ message: "Search query is required and cannot be empty." });
     }
 
-    const results = db.searchFiles(query.trim());
+    const matchingIds = search.searchIndex(query.trim().toLowerCase());
+
+    if (matchingIds.length === 0) {
+      return res.status(200).json([]); // Return empty array, not an error
+    }
+
+    const results = await db.getFilesByIds(matchingIds);
 
     if (!results) {
       return res.status(500).json({ message: "Error searching files." });
     }
 
-    const formattedResults = results.map((f) => ({
-      id: f.id,
-      title: f.title,
-      originalname: f.originalname,
-      uploadDate: f.uploadDate,
-      size: f.size,
-      fileType: f.fileType || "unknown",
-      snippet: f.extractedText ? f.extractedText.substring(0, 200) + "..." : "",
+    const formattedResults = results.map((file) => ({
+      ...file,
+      snippet: file.extractedText
+        ? file.extractedText.substring(0, 200) + "..."
+        : "",
     }));
 
-    res.status(200).json(formattedResults);
+    res.status(200).json(results);
   } catch (error) {
     console.error("Error searching files:", error);
     res.status(500).json({ message: "Server error.", error: error.message });
@@ -354,7 +354,7 @@ app.get("/search", (req, res) => {
 app.delete("/files/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const file = db.getFileById(id);
+    const file = await db.getFileById(id);
 
     if (!file) {
       return res.status(404).json({ message: "File not found." });
@@ -364,13 +364,15 @@ app.delete("/files/:id", async (req, res) => {
     await cleanupFile(file.path);
 
     // Delete from database
-    const deleted = db.deleteFile(id);
+    const deleted = await db.deleteFile(id);
 
     if (!deleted) {
       return res
         .status(500)
         .json({ message: "Failed to delete file from database." });
     }
+
+    search.removeFromFileIndex(id);
 
     res.status(200).json({ message: "File deleted successfully." });
   } catch (error) {
@@ -393,6 +395,7 @@ app.use((err, req, res, next) => {
 });
 
 // --- Start Server ---
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Backend server is running on http://localhost:${PORT}`);
+  await search.initializeIndex(db.getFiles);
 });

@@ -4,18 +4,24 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node --watch index"
+    "start": "node --watch index",
+    "prisma:dev": "npx prisma migrate dev",
+    "prisma:gen": "npx prisma generate"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@prisma/client": "^6.19.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "lowdb": "^1.0.0",
+    "flexsearch": "^0.7.43",
     "multer": "^2.0.2",
     "pdf-parse": "^2.4.5",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.19.0"
   }
 }
